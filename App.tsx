@@ -1,16 +1,123 @@
-import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, BarChart3, MessageSquare, Menu, X, Rocket, Database, RefreshCw, Briefcase, ChevronDown, ChevronRight, LucideIcon } from 'lucide-react';
+import React, { useState, useEffect, createContext, useContext, ReactNode } from 'react';
+import { LayoutDashboard, Users, BarChart3, MessageSquare, Menu, X, Rocket, Database, RefreshCw, Briefcase, ChevronDown, ChevronRight, LucideIcon, User } from 'lucide-react';
 import { AnalysisChart } from './components/AnalysisChart';
 import { LCTable } from './components/LCTable';
 import { ChatBot } from './components/ChatBot';
 import { DeploymentModal } from './components/DeploymentModal';
 import { DataSourceModal } from './components/DataSourceModal';
-import { STATUS_THRESHOLDS, getStatus } from './constants';
+import { STATUS_THRESHOLDS, getStatus, MANAGERS_DATA } from './constants';
 import { getQuickStats } from './services/geminiService';
-import { DataProvider, useData } from './contexts/DataContext';
-import { PerformanceStatus } from './types';
+import { PerformanceStatus, Manager, TL, LC } from './types';
+import { fetchSheetData } from './services/sheetService';
+import { parseCSV, buildHierarchy } from './utils/dataUtils';
 
-// --- INTERNAL COMPONENTS (Merged to fix import errors) ---
+// --- INTERNAL DATA CONTEXT (Moved here so you don't need other files) ---
+
+interface DataContextType {
+  managers: Manager[];
+  allTLs: TL[];
+  allLCs: LC[];
+  isLoading: boolean;
+  sheetUrl: string | null;
+  setSheetUrl: (url: string | null) => void;
+  rawData: string | null;
+  setRawData: (data: string | null) => void;
+  isUsingLive: boolean;
+  lastUpdated: Date | null;
+  refreshData: () => Promise<void>;
+}
+
+const DataContext = createContext<DataContextType | undefined>(undefined);
+
+const DataProvider = ({ children }: { children: ReactNode }) => {
+  // FORCE DEMO DATA BY DEFAULT (Fixes blank screen)
+  const [managers, setManagers] = useState<Manager[]>(MANAGERS_DATA); 
+  
+  const [sheetUrl, setSheetUrl] = useState<string | null>(localStorage.getItem('prodview_sheet_url'));
+  const [rawData, setRawData] = useState<string | null>(localStorage.getItem('prodview_raw_data'));
+  const [isLoading, setIsLoading] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(new Date());
+
+  const allTLs = managers.flatMap(m => m.tls);
+  const allLCs = allTLs.flatMap(t => t.lcs);
+  
+  const isUsingLive = !!sheetUrl || !!rawData;
+
+  const refreshData = async () => {
+    setIsLoading(true);
+    try {
+        let lcs = [];
+        if (rawData) {
+            lcs = parseCSV(rawData);
+            if (lcs.length > 0) {
+                const hierarchy = buildHierarchy(lcs);
+                setManagers(hierarchy);
+                setLastUpdated(new Date());
+            }
+        } 
+        else if (sheetUrl) {
+            const data = await fetchSheetData(sheetUrl);
+            if (data && data.length > 0) {
+                setManagers(data);
+                setLastUpdated(new Date());
+            } else {
+                // FALLBACK: If live link fails, use Demo Data so it's never blank
+                console.warn("Live fetch failed, reverting to Demo Data");
+                setManagers(MANAGERS_DATA); 
+            }
+        } 
+        else {
+            setManagers(MANAGERS_DATA);
+        }
+    } catch (e) {
+        console.error("Data Refresh Failed", e);
+        setManagers(MANAGERS_DATA);
+    }
+    setIsLoading(false);
+  };
+
+  useEffect(() => {
+    refreshData();
+  }, [sheetUrl, rawData]);
+
+  useEffect(() => {
+    if (sheetUrl) localStorage.setItem('prodview_sheet_url', sheetUrl);
+    else localStorage.removeItem('prodview_sheet_url');
+  }, [sheetUrl]);
+
+  useEffect(() => {
+    if (rawData) localStorage.setItem('prodview_raw_data', rawData);
+    else localStorage.removeItem('prodview_raw_data');
+  }, [rawData]);
+
+  return (
+    <DataContext.Provider value={{ 
+        managers, 
+        allTLs, 
+        allLCs, 
+        isLoading, 
+        sheetUrl, 
+        setSheetUrl,
+        rawData,
+        setRawData,
+        isUsingLive,
+        lastUpdated,
+        refreshData 
+    }}>
+      {children}
+    </DataContext.Provider>
+  );
+};
+
+const useData = () => {
+  const context = useContext(DataContext);
+  if (context === undefined) {
+    throw new Error('useData must be used within a DataProvider');
+  }
+  return context;
+};
+
+// --- INTERNAL COMPONENTS ---
 
 interface StatsCardProps {
   title: string;
@@ -92,7 +199,7 @@ const OrgView: React.FC = () => {
                     <div key={tl.name} className="flex items-center justify-between p-3 rounded-lg bg-slate-50 border border-slate-100 ml-4">
                       <div className="flex items-center gap-3">
                         <div className="bg-white p-1.5 rounded-full border border-slate-200">
-                          <Users className="w-4 h-4 text-brand-500" />
+                          <User className="w-4 h-4 text-brand-500" />
                         </div>
                         <div>
                            <p className="text-sm font-medium text-slate-700">{tl.name}</p>
